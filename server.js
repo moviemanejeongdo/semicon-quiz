@@ -1,0 +1,191 @@
+const express = require("express");
+const cors = require("cors");
+const multer = require("multer");
+const axios = require("axios");
+const fs = require("fs-extra");
+const path = require("path");
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 🔑 Gemini API 키: 환경변수 또는 하드코딩
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "YOUR_GEMINI_API_KEY"; 
+// ⚠️ 여기에 주인님 키 직접 넣지 말고 환경변수로 쓰는 걸 강력추천!
+
+// 업로드 메모리 저장
+const upload = multer({ storage: multer.memoryStorage() });
+
+// CORS & JSON
+app.use(cors());
+app.use(express.json());
+
+// 정적 파일 제공
+app.use(express.static(path.join(__dirname, "public")));
+
+// 결과 저장 파일
+const SUBMISSION_FILE = path.join(__dirname, "submissions.json");
+
+// 초기화
+async function initStorage() {
+  if (!(await fs.pathExists(SUBMISSION_FILE))) {
+    await fs.writeJson(SUBMISSION_FILE, []);
+  }
+}
+initStorage();
+
+// 🔹 Gemini API 호출 함수
+async function gradeWithGemini({ nickname, answers, images }) {
+  // 채점 기준 & 포맷 안내 프롬프트
+  const rubric = `
+You are a strict semiconductor teacher.
+You will grade 3 short-answer questions about semiconductor concepts.
+Score each question from 0 to 100.
+Return ONLY a JSON object with this structure:
+
+{
+  "scores": [number, number, number],
+  "feedback": "overall feedback in Korean, 3~5 sentences",
+  "per_question_feedback": [
+    "feedback for Q1 in Korean",
+    "feedback for Q2 in Korean",
+    "feedback for Q3 in Korean"
+  ]
+}
+
+Question 1: FEOL과 BEOL의 차이와, 왜 고온 공정은 FEOL에서만 가능한지 설명하라.
+핵심 포인트:
+- FEOL: 트랜지스터/소자 형성, Si/SiO2/Poly, 고온 공정 가능(산화, 어닐링 등)
+- BEOL: 금속 배선/비아/절연막, Cu/Al/Low-k, 고온 불가(금속 확산/융해, 유기 절연막 손상)
+
+Question 2: DRAM 셀이 어떻게 0과 1을 저장하고, 왜 리프레시(Refresh)가 필요한지 설명하라.
+핵심 포인트:
+- 1T1C 구조, 커패시터에 전하 유무로 0/1 저장
+- 누설 전류로 전하가 사라지므로 주기적 리프레시 필요
+- 워드라인/비트라인/센스 앰프 개념 언급 시 가점
+
+Question 3: 반도체 수율(Yield)이 무엇인지, 왜 중요한지, 낮아지는 주된 이유를 2가지 이상 설명하라.
+핵심 포인트:
+- 수율 = 전체 칩 중 양품 비율
+- 생산 단가와 직결
+- 파티클, 공정 불균일, 장비 드리프트, 설계 문제 등이 원인
+`;
+
+  const baseText = `
+Nickname: ${nickname}
+
+Answers:
+Q1: ${answers[0] || ""}
+Q2: ${answers[1] || ""}
+Q3: ${answers[2] || ""}
+
+If images are provided, you may use them only as supplementary context, but grading should be based mainly on the text answers.
+`;
+
+  const parts = [
+    { text: rubric },
+    { text: baseText }
+  ];
+
+  // 이미지가 있으면 Gemini에 멀티모달로 같이 보냄
+  for (const img of images) {
+    parts.push({
+      inline_data: {
+        mime_type: img.mimetype,
+        data: img.buffer.toString("base64")
+      }
+    });
+  }
+
+  const url =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+
+  const response = await axios.post(
+    url,
+    {
+      contents: [
+        {
+          role: "user",
+          parts
+        }
+      ]
+    },
+    {
+      params: { key: GEMINI_API_KEY }
+    }
+  );
+
+  const text =
+    response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    // 실패하면 기본값
+    parsed = {
+      scores: [0, 0, 0],
+      feedback: "JSON 파싱 실패로 기본 점수를 부여했습니다.",
+      per_question_feedback: [
+        "Q1: 채점 실패",
+        "Q2: 채점 실패",
+        "Q3: 채점 실패"
+      ]
+    };
+  }
+
+  // 방어코드
+  if (!Array.isArray(parsed.scores) || parsed.scores.length !== 3) {
+    parsed.scores = [0, 0, 0];
+  }
+
+  return parsed;
+}
+
+// 🔹 채점 API (답안 + 이미지 업로드)
+app.post("/api/grade", upload.array("images", 3), async (req, res) => {
+  try {
+    const { nickname, answers } = req.body;
+    const parsedAnswers = JSON.parse(answers || "[]");
+    const images = req.files || [];
+
+    const result = await gradeWithGemini({
+      nickname,
+      answers: parsedAnswers,
+      images
+    });
+
+    const submission = {
+      id: Date.now(),
+      nickname,
+      answers: parsedAnswers,
+      scores: result.scores,
+      feedback: result.feedback,
+      perQuestionFeedback: result.per_question_feedback || [],
+      createdAt: new Date().toISOString()
+    };
+
+    const list = await fs.readJson(SUBMISSION_FILE);
+    list.push(submission);
+    await fs.writeJson(SUBMISSION_FILE, list, { spaces: 2 });
+
+    res.json(submission);
+  } catch (err) {
+    console.error(err.response?.data || err);
+    res.status(500).json({ error: "채점 중 오류가 발생했습니다." });
+  }
+});
+
+// 🔹 전체 결과 조회 (대시보드용, 누구나 볼 수 있음)
+app.get("/api/results", async (req, res) => {
+  try {
+    const list = await fs.readJson(SUBMISSION_FILE);
+    res.json(list.sort((a, b) => b.id - a.id));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "결과 조회 중 오류가 발생했습니다." });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
+});
