@@ -35,12 +35,20 @@ initStorage();
 
 // 🔹 Gemini API 호출 함수
 async function gradeWithGemini({ nickname, answers, images }) {
-  // 채점 기준 & 포맷 안내 프롬프트
+  // 🔹 채점 기준 (조금 더 빡세게)
   const rubric = `
 You are a strict semiconductor teacher.
 You will grade 3 short-answer questions about semiconductor concepts.
-Score each question from 0 to 100.
-Return ONLY a JSON object with this structure:
+
+You MUST follow these rules strictly:
+- Score each question from 0 to 100.
+- If an answer is clearly off-topic, random text, or meaningless characters (e.g. "asdfasdf", "ㅋㅋㅋㅋ"), you MUST give that question a score of 0.
+- If an answer is extremely short (for example less than 10 Korean characters or less than 5 English words) and does not contain any relevant technical content, you MUST give that question a score of 0.
+- Do not be generous. Only give scores above 0 when the student shows some understanding of the semiconductor concept.
+- If the student confuses concepts completely, heavily penalize the score.
+
+You MUST return ONLY a raw JSON object, with NO markdown, NO code fences, NO extra text.
+The JSON format must be exactly:
 
 {
   "scores": [number, number, number],
@@ -81,65 +89,114 @@ Q3: ${answers[2] || ""}
 If images are provided, you may use them only as supplementary context, but grading should be based mainly on the text answers.
 `;
 
+  // 🔹 Gemini API에 보낼 parts 구성 (텍스트 + 이미지)
   const parts = [
     { text: rubric },
     { text: baseText }
   ];
 
-  // 이미지가 있으면 Gemini에 멀티모달로 같이 보냄
   for (const img of images) {
     parts.push({
-      inline_data: {
-        mime_type: img.mimetype,
+      inlineData: {
+        mimeType: img.mimetype,
         data: img.buffer.toString("base64")
       }
     });
   }
 
+  // ✅ 공식 REST 엔드포인트 형식
   const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+      "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=" + GEMINI_API_KEY;
 
-  const response = await axios.post(
-    url,
-    {
-      contents: [
+
+      const response = await axios.post(
+        url,
         {
-          role: "user",
-          parts
+          contents: [
+            {
+              role: "user",
+              parts
+            }
+          ]
+        },
+        {
+          headers: {
+            "Content-Type": "application/json"
+          }
         }
-      ]
-    },
-    {
-      params: { key: GEMINI_API_KEY }
+      );
+    
+      let text =
+        response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+    
+      // 🔹 1차: 양쪽 공백 제거
+      let cleaned = text.trim();
+    
+      // 🔹 2차: ```json ... ``` 코드블록 제거
+      if (cleaned.startsWith("```")) {
+        // 첫 줄( ``` 또는 ```json ) 제거
+        const firstNewline = cleaned.indexOf("\n");
+        if (firstNewline !== -1) {
+          cleaned = cleaned.slice(firstNewline + 1);
+        }
+        // 마지막 ``` 제거
+        const lastFence = cleaned.lastIndexOf("```");
+        if (lastFence !== -1) {
+          cleaned = cleaned.slice(0, lastFence);
+        }
+        cleaned = cleaned.trim();
+      }
+    
+      let parsed;
+    
+      try {
+        // 🔹 3차: 그대로 JSON 파싱 시도
+        parsed = JSON.parse(cleaned);
+      } catch (e1) {
+        // 🔹 4차: 혹시 중간에 다른 문자가 섞여 있으면 { ... } 부분만 추출해서 재시도
+        const firstBrace = cleaned.indexOf("{");
+        const lastBrace = cleaned.lastIndexOf("}");
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const jsonSlice = cleaned.slice(firstBrace, lastBrace + 1);
+          try {
+            parsed = JSON.parse(jsonSlice);
+          } catch (e2) {
+            console.error("JSON parse error from Gemini (2nd try):", cleaned);
+            // 🔹 완전 실패 시: 그래도 Gemini 원문을 그대로 프론트에 넘겨주기
+            parsed = {
+              scores: [0, 0, 0],
+              feedback:
+                "JSON 파싱에 실패했습니다. 아래는 Gemini의 원본 응답입니다:\n\n" +
+                text,
+              per_question_feedback: [
+                "원본 응답을 직접 확인해주세요.",
+                "",
+                ""
+              ]
+            };
+          }
+        } else {
+          console.error("JSON parse error from Gemini (no braces):", cleaned);
+          parsed = {
+            scores: [0, 0, 0],
+            feedback:
+              "JSON 파싱에 실패했습니다. 아래는 Gemini의 원본 응답입니다:\n\n" +
+              text,
+            per_question_feedback: [
+              "원본 응답을 직접 확인해주세요.",
+              "",
+              ""
+            ]
+          };
+        }
+      }
+    
+      if (!Array.isArray(parsed.scores) || parsed.scores.length !== 3) {
+        parsed.scores = [0, 0, 0];
+      }
+    
+      return parsed;
     }
-  );
-
-  const text =
-    response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (e) {
-    // 실패하면 기본값
-    parsed = {
-      scores: [0, 0, 0],
-      feedback: "JSON 파싱 실패로 기본 점수를 부여했습니다.",
-      per_question_feedback: [
-        "Q1: 채점 실패",
-        "Q2: 채점 실패",
-        "Q3: 채점 실패"
-      ]
-    };
-  }
-
-  // 방어코드
-  if (!Array.isArray(parsed.scores) || parsed.scores.length !== 3) {
-    parsed.scores = [0, 0, 0];
-  }
-
-  return parsed;
-}
 
 // 🔹 채점 API (답안 + 이미지 업로드)
 app.post("/api/grade", upload.array("images", 3), async (req, res) => {

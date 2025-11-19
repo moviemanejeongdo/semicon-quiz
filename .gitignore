@@ -1,0 +1,4 @@
+node_modules/
+submissions.json
+.env
+.DS_Store
