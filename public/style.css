@@ -310,9 +310,36 @@ textarea::placeholder {
   color: var(--accent);
   font-weight: 600;
 }
+.result-item-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .result-item-header span.time {
   color: var(--text-sub);
   font-size: 0.78rem;
+}
+.delete-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 101, 132, 0.2);
+  color: var(--danger);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition-fast);
+  padding: 0;
+  font-weight: bold;
+}
+.delete-btn:hover {
+  background: var(--danger);
+  color: white;
+  transform: scale(1.1);
 }
 .result-item-scores {
   display: flex;

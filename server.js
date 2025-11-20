@@ -19,9 +19,6 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.use(cors());
 app.use(express.json());
 
-// 정적 파일 제공
-app.use(express.static(path.join(__dirname, "public")));
-
 // 결과 저장 파일
 const SUBMISSION_FILE = path.join(__dirname, "submissions.json");
 
@@ -242,6 +239,38 @@ app.get("/api/results", async (req, res) => {
     res.status(500).json({ error: "결과 조회 중 오류가 발생했습니다." });
   }
 });
+
+// 🔹 결과 삭제 API
+app.delete("/api/results/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "잘못된 ID 형식입니다." });
+    }
+    
+    const list = await fs.readJson(SUBMISSION_FILE);
+    const originalLength = list.length;
+    const filtered = list.filter((item) => {
+      // ID를 숫자로 비교 (문자열로 저장된 경우도 처리)
+      const itemId = typeof item.id === 'string' ? parseInt(item.id) : item.id;
+      return itemId !== id;
+    });
+    
+    if (originalLength === filtered.length) {
+      console.log(`삭제 실패: ID ${id}를 찾을 수 없습니다. 현재 목록:`, list.map(i => ({ id: i.id, type: typeof i.id })));
+      return res.status(404).json({ error: "해당 결과를 찾을 수 없습니다." });
+    }
+    
+    await fs.writeJson(SUBMISSION_FILE, filtered, { spaces: 2 });
+    res.json({ success: true, message: "기록이 삭제되었습니다." });
+  } catch (err) {
+    console.error("삭제 API 오류:", err);
+    res.status(500).json({ error: "삭제 중 오류가 발생했습니다: " + err.message });
+  }
+});
+
+// 정적 파일 제공 (API 라우트 이후에 배치)
+app.use(express.static(path.join(__dirname, "public")));
 
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);

@@ -129,7 +129,10 @@ async function loadDashboard() {
       div.innerHTML = `
         <div class="result-item-header">
           <span class="nickname">${item.nickname}</span>
-          <span class="time">${timeStr}</span>
+          <div class="result-item-header-right">
+            <span class="time">${timeStr}</span>
+            <button class="delete-btn" data-id="${item.id}" title="삭제">×</button>
+          </div>
         </div>
         <div class="result-item-scores">
           <span>Q1: ${scores[0]}점</span>
@@ -140,6 +143,27 @@ async function loadDashboard() {
         <div class="result-item-feedback">${item.feedback || ""}</div>
       `;
       dashboardBody.appendChild(div);
+      
+      // 삭제 버튼 이벤트 리스너 추가
+      const deleteBtn = div.querySelector(".delete-btn");
+      deleteBtn.addEventListener("click", async () => {
+        if (!confirm("이 기록을 삭제하시겠습니까?")) {
+          return;
+        }
+        try {
+          const res = await fetch(API_BASE + `/api/results/${item.id}`, {
+            method: "DELETE"
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || "삭제 실패");
+          }
+          await loadDashboard();
+        } catch (err) {
+          console.error("삭제 오류:", err);
+          alert("삭제 중 오류가 발생했습니다: " + err.message);
+        }
+      });
     });
   } catch (err) {
     console.error(err);
